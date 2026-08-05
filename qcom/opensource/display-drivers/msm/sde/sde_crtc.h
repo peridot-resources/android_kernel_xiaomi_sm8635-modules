@@ -406,6 +406,8 @@ struct sde_crtc {
 
 	u32 vblank_cb_count;
 	u64 play_count;
+	u32 kcal_gen;
+	u32 kcal_owned;
 	ktime_t vblank_cb_time;
 	ktime_t vblank_last_cb_time;
 	ktime_t retire_frame_event_time;

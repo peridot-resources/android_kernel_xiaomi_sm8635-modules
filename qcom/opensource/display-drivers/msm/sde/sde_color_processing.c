@@ -8,6 +8,9 @@
 
 #include <linux/dma-buf.h>
 #include <linux/string.h>
+#include <linux/kobject.h>
+#include <linux/sysfs.h>
+#include <linux/platform_device.h>
 #include <drm/msm_drm_pp.h>
 #include "sde_color_processing.h"
 #include "sde_kms.h"
@@ -23,6 +26,8 @@
 
 #define DEMURA_BACKLIGHT_MAX 1024
 #define DEMURA_BACKLIGHT_MIN 64
+
+static struct sde_kms *get_kms(struct drm_crtc *crtc);
 
 struct sde_cp_node {
 	u32 property_id;
@@ -47,6 +52,536 @@ struct sde_cp_prop_attach {
 	u32 feature;
 	uint64_t val;
 };
+
+static struct sde_cp_node *_sde_cp_feature_getnode_activelist(u32 feature,
+		struct list_head *list);
+
+#define SDE_KCAL_UNITY_COEFF	0x8000
+#define SDE_KCAL_RGB_MAX	256
+#define SDE_KCAL_MIN_FLOOR	35
+#define SDE_KCAL_DEF_MIN	35
+#define SDE_KCAL_PCC_COEFF_MASK	0x3FFFF
+#define SDE_KCAL_PCC_CONST_MAX	0x7FFF
+
+#define SDE_KCAL_PA_UI_MIN	128
+#define SDE_KCAL_PA_UI_MAX	383
+#define SDE_KCAL_PA_NEUTRAL	255
+#define SDE_KCAL_PA_HW_MIN	(-128)
+#define SDE_KCAL_PA_HW_MAX	127
+#define SDE_KCAL_PA_HW_MASK	0xFF
+
+#define SDE_KCAL_HUE_UI_MAX	1536
+#define SDE_KCAL_HUE_HW_MASK	0xFFF
+
+enum sde_kcal_pa_id {
+	SDE_KCAL_PA_HUE,
+	SDE_KCAL_PA_SAT,
+	SDE_KCAL_PA_VAL,
+	SDE_KCAL_PA_CONT,
+	SDE_KCAL_PA_COUNT,
+};
+
+#define SDE_KCAL_OWN_PCC	BIT(0)
+#define SDE_KCAL_OWN_PA(_id)	BIT(1 + (_id))
+#define SDE_KCAL_OWN_PA_MASK	GENMASK(SDE_KCAL_PA_COUNT, 1)
+
+struct sde_kcal_pa_desc {
+	s32 ui_min;
+	s32 ui_max;
+	s32 neutral;
+	s32 hw_min;
+	s32 hw_max;
+	u32 hw_mask;
+	u64 flag;
+};
+
+static const struct sde_kcal_pa_desc sde_kcal_pa_descs[SDE_KCAL_PA_COUNT] = {
+	[SDE_KCAL_PA_HUE] = {
+		.ui_min		= 0,
+		.ui_max		= SDE_KCAL_HUE_UI_MAX,
+		.neutral	= 0,
+		.hw_min		= 0,
+		.hw_max		= SDE_KCAL_HUE_UI_MAX,
+		.hw_mask	= SDE_KCAL_HUE_HW_MASK,
+		.flag		= PA_HSIC_HUE_ENABLE,
+	},
+	[SDE_KCAL_PA_SAT] = {
+		.ui_min		= SDE_KCAL_PA_UI_MIN,
+		.ui_max		= SDE_KCAL_PA_UI_MAX,
+		.neutral	= SDE_KCAL_PA_NEUTRAL,
+		.hw_min		= SDE_KCAL_PA_HW_MIN,
+		.hw_max		= SDE_KCAL_PA_HW_MAX,
+		.hw_mask	= SDE_KCAL_PA_HW_MASK,
+		.flag		= PA_HSIC_SAT_ENABLE,
+	},
+	[SDE_KCAL_PA_VAL] = {
+		.ui_min		= SDE_KCAL_PA_UI_MIN,
+		.ui_max		= SDE_KCAL_PA_UI_MAX,
+		.neutral	= SDE_KCAL_PA_NEUTRAL,
+		.hw_min		= SDE_KCAL_PA_HW_MIN,
+		.hw_max		= SDE_KCAL_PA_HW_MAX,
+		.hw_mask	= SDE_KCAL_PA_HW_MASK,
+		.flag		= PA_HSIC_VAL_ENABLE,
+	},
+	[SDE_KCAL_PA_CONT] = {
+		.ui_min		= SDE_KCAL_PA_UI_MIN,
+		.ui_max		= SDE_KCAL_PA_UI_MAX,
+		.neutral	= SDE_KCAL_PA_NEUTRAL,
+		.hw_min		= SDE_KCAL_PA_HW_MIN,
+		.hw_max		= SDE_KCAL_PA_HW_MAX,
+		.hw_mask	= SDE_KCAL_PA_HW_MASK,
+		.flag		= PA_HSIC_CONT_ENABLE,
+	},
+};
+
+struct sde_kcal {
+	bool enable;
+	bool invert;
+	u32 red;
+	u32 green;
+	u32 blue;
+	u32 min;
+	s32 pa[SDE_KCAL_PA_COUNT];
+	u32 gen;
+	struct platform_device *pdev;
+};
+
+static DEFINE_MUTEX(sde_kcal_lock);
+
+static struct sde_kcal sde_kcal = {
+	.enable	= true,
+	.red	= SDE_KCAL_RGB_MAX,
+	.green	= SDE_KCAL_RGB_MAX,
+	.blue	= SDE_KCAL_RGB_MAX,
+	.min	= SDE_KCAL_DEF_MIN,
+	.gen	= 1,
+};
+
+static void sde_kcal_invalidate(void)
+{
+	if (++sde_kcal.gen == 0)
+		sde_kcal.gen = 1;
+}
+
+static u32 sde_kcal_effective(u32 val)
+{
+	return clamp_t(u32, val, sde_kcal.min, SDE_KCAL_RGB_MAX);
+}
+
+static u32 sde_kcal_coeff(u32 val)
+{
+	return (sde_kcal_effective(val) * SDE_KCAL_UNITY_COEFF) /
+			SDE_KCAL_RGB_MAX;
+}
+
+static u32 sde_kcal_neg_coeff(u32 mag)
+{
+	return (u32)(-(s32)mag) & SDE_KCAL_PCC_COEFF_MASK;
+}
+
+static u32 sde_kcal_const_coeff(u32 mag)
+{
+	return min_t(u32, mag, (u32)SDE_KCAL_PCC_CONST_MAX);
+}
+
+static u32 sde_kcal_needed_mask(void)
+{
+	u32 mask = 0;
+	int i;
+
+	if (!sde_kcal.enable)
+		return 0;
+
+	if (sde_kcal.invert ||
+			sde_kcal_effective(sde_kcal.red) != SDE_KCAL_RGB_MAX ||
+			sde_kcal_effective(sde_kcal.green) != SDE_KCAL_RGB_MAX ||
+			sde_kcal_effective(sde_kcal.blue) != SDE_KCAL_RGB_MAX)
+		mask |= SDE_KCAL_OWN_PCC;
+
+	for (i = 0; i < SDE_KCAL_PA_COUNT; i++)
+		if (sde_kcal.pa[i])
+			mask |= SDE_KCAL_OWN_PA(i);
+
+	return mask;
+}
+
+static void sde_kcal_build_pcc(struct drm_msm_pcc *pcc, bool identity)
+{
+	memset(pcc, 0, sizeof(*pcc));
+
+	if (identity) {
+		pcc->r.r = SDE_KCAL_UNITY_COEFF;
+		pcc->g.g = SDE_KCAL_UNITY_COEFF;
+		pcc->b.b = SDE_KCAL_UNITY_COEFF;
+		return;
+	}
+
+	if (sde_kcal.invert) {
+		u32 r = sde_kcal_coeff(sde_kcal.red);
+		u32 g = sde_kcal_coeff(sde_kcal.green);
+		u32 b = sde_kcal_coeff(sde_kcal.blue);
+
+		pcc->r.c = sde_kcal_const_coeff(r);
+		pcc->g.c = sde_kcal_const_coeff(g);
+		pcc->b.c = sde_kcal_const_coeff(b);
+		pcc->r.r = sde_kcal_neg_coeff(r);
+		pcc->g.g = sde_kcal_neg_coeff(g);
+		pcc->b.b = sde_kcal_neg_coeff(b);
+		return;
+	}
+
+	pcc->r.r = sde_kcal_coeff(sde_kcal.red);
+	pcc->g.g = sde_kcal_coeff(sde_kcal.green);
+	pcc->b.b = sde_kcal_coeff(sde_kcal.blue);
+}
+
+static u32 *sde_kcal_hsic_field(struct drm_msm_pa_hsic *hsic,
+		enum sde_kcal_pa_id id)
+{
+	switch (id) {
+	case SDE_KCAL_PA_HUE:
+		return &hsic->hue;
+	case SDE_KCAL_PA_SAT:
+		return &hsic->saturation;
+	case SDE_KCAL_PA_VAL:
+		return &hsic->value;
+	default:
+		return &hsic->contrast;
+	}
+}
+
+static void sde_kcal_build_hsic(struct sde_crtc *sde_crtc,
+		struct drm_msm_pa_hsic *hsic, u32 needed)
+{
+	struct sde_cp_node *node;
+	struct drm_property_blob *blob;
+	struct drm_msm_pa_hsic *active;
+	int i;
+
+	memset(hsic, 0, sizeof(*hsic));
+
+	node = _sde_cp_feature_getnode_activelist(SDE_CP_CRTC_DSPP_HSIC,
+			&sde_crtc->cp_active_list);
+	blob = node ? node->blob_ptr : NULL;
+	if (blob && blob->length == sizeof(*active)) {
+		active = blob->data;
+		hsic->flags = active->flags;
+		hsic->hue = active->hue;
+		hsic->saturation = active->saturation;
+		hsic->value = active->value;
+		hsic->contrast = active->contrast;
+	}
+
+	for (i = 0; i < SDE_KCAL_PA_COUNT; i++) {
+		const struct sde_kcal_pa_desc *desc = &sde_kcal_pa_descs[i];
+
+		if (!(needed & SDE_KCAL_OWN_PA(i)))
+			continue;
+
+		hsic->flags |= desc->flag;
+		*sde_kcal_hsic_field(hsic, i) =
+			(u32)sde_kcal.pa[i] & desc->hw_mask;
+	}
+}
+
+static bool sde_cp_kcal_pending(struct sde_crtc *sde_crtc)
+{
+	bool pending;
+
+	mutex_lock(&sde_kcal_lock);
+	pending = sde_crtc->kcal_gen != sde_kcal.gen;
+	mutex_unlock(&sde_kcal_lock);
+
+	return pending;
+}
+
+static void sde_cp_kcal_invalidate_crtc(struct sde_crtc *sde_crtc)
+{
+	mutex_lock(&sde_kcal_lock);
+	sde_crtc->kcal_gen = 0;
+	mutex_unlock(&sde_kcal_lock);
+}
+
+static bool sde_cp_kcal_apply(struct sde_crtc *sde_crtc)
+{
+	struct drm_msm_pcc pcc;
+	struct drm_msm_pa_hsic hsic;
+	struct sde_hw_cp_cfg hw_cfg;
+	struct sde_hw_dspp *hw_dspp;
+	struct sde_hw_mixer *hw_lm;
+	struct sde_mdss_cfg *catalog;
+	u32 num_mixers = sde_crtc->num_mixers;
+	u32 needed, program;
+	bool program_pcc, program_hsic;
+	int i;
+
+	mutex_lock(&sde_kcal_lock);
+	if (sde_crtc->kcal_gen == sde_kcal.gen) {
+		mutex_unlock(&sde_kcal_lock);
+		return false;
+	}
+	sde_crtc->kcal_gen = sde_kcal.gen;
+
+	needed = sde_kcal_needed_mask();
+	program = needed | sde_crtc->kcal_owned;
+	if (!program) {
+		mutex_unlock(&sde_kcal_lock);
+		return false;
+	}
+	sde_crtc->kcal_owned = needed;
+
+	program_pcc = program & SDE_KCAL_OWN_PCC;
+	program_hsic = program & SDE_KCAL_OWN_PA_MASK;
+
+	if (program_pcc)
+		sde_kcal_build_pcc(&pcc, !(needed & SDE_KCAL_OWN_PCC));
+	if (program_hsic)
+		sde_kcal_build_hsic(sde_crtc, &hsic, needed);
+	mutex_unlock(&sde_kcal_lock);
+
+	memset(&hw_cfg, 0, sizeof(hw_cfg));
+	hw_cfg.num_of_mixers = num_mixers;
+	hw_cfg.last_feature = 0;
+	hw_cfg.panel_width = sde_crtc->base.state->adjusted_mode.hdisplay;
+	hw_cfg.panel_height = sde_crtc->base.state->adjusted_mode.vdisplay;
+	hw_cfg.is_crtc_enabled = sde_crtc->enabled;
+
+	catalog = get_kms(&sde_crtc->base)->catalog;
+	if (catalog)
+		hw_cfg.broadcast_disabled = catalog->dma_cfg.broadcast_disabled;
+
+	for (i = 0; i < num_mixers && i < DSPP_MAX; i++)
+		hw_cfg.dspp[i] = sde_crtc->mixers[i].hw_dspp;
+
+	for (i = 0; i < num_mixers; i++) {
+		hw_dspp = sde_crtc->mixers[i].hw_dspp;
+		hw_lm = sde_crtc->mixers[i].hw_lm;
+		if (!hw_dspp || !hw_lm)
+			continue;
+
+		hw_cfg.ctl = sde_crtc->mixers[i].hw_ctl;
+		hw_cfg.mixer_info = hw_lm;
+		hw_cfg.displayh = num_mixers * hw_lm->cfg.out_width;
+		hw_cfg.displayv = hw_lm->cfg.out_height;
+
+		if (program_pcc && hw_dspp->ops.setup_pcc) {
+			hw_cfg.payload = &pcc;
+			hw_cfg.len = sizeof(pcc);
+			hw_dspp->ops.setup_pcc(hw_dspp, &hw_cfg);
+		}
+		if (program_hsic && hw_dspp->ops.setup_pa_hsic) {
+			hw_cfg.payload = &hsic;
+			hw_cfg.len = sizeof(hsic);
+			hw_dspp->ops.setup_pa_hsic(hw_dspp, &hw_cfg);
+		}
+	}
+
+	return true;
+}
+
+static ssize_t sde_kcal_pa_show_one(char *buf, enum sde_kcal_pa_id id)
+{
+	s32 ui;
+
+	mutex_lock(&sde_kcal_lock);
+	ui = sde_kcal.pa[id] + sde_kcal_pa_descs[id].neutral;
+	mutex_unlock(&sde_kcal_lock);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", ui);
+}
+
+static ssize_t sde_kcal_pa_store_one(const char *buf, size_t count,
+		enum sde_kcal_pa_id id)
+{
+	const struct sde_kcal_pa_desc *desc = &sde_kcal_pa_descs[id];
+	s32 ui;
+
+	if (kstrtos32(buf, 0, &ui))
+		return -EINVAL;
+
+	ui = clamp_t(s32, ui, desc->ui_min, desc->ui_max) - desc->neutral;
+
+	mutex_lock(&sde_kcal_lock);
+	sde_kcal.pa[id] = clamp_t(s32, ui, desc->hw_min, desc->hw_max);
+	sde_kcal_invalidate();
+	mutex_unlock(&sde_kcal_lock);
+
+	return count;
+}
+
+static ssize_t kcal_show_impl(char *buf)
+{
+	u32 r, g, b;
+
+	mutex_lock(&sde_kcal_lock);
+	r = sde_kcal_effective(sde_kcal.red);
+	g = sde_kcal_effective(sde_kcal.green);
+	b = sde_kcal_effective(sde_kcal.blue);
+	mutex_unlock(&sde_kcal_lock);
+
+	return scnprintf(buf, PAGE_SIZE, "%u %u %u\n", r, g, b);
+}
+
+static ssize_t kcal_store_impl(const char *buf, size_t count)
+{
+	u32 rgb[3];
+
+	if (sscanf(buf, "%u %u %u", &rgb[0], &rgb[1], &rgb[2]) != 3)
+		return -EINVAL;
+
+	mutex_lock(&sde_kcal_lock);
+	sde_kcal.red = min_t(u32, rgb[0], (u32)SDE_KCAL_RGB_MAX);
+	sde_kcal.green = min_t(u32, rgb[1], (u32)SDE_KCAL_RGB_MAX);
+	sde_kcal.blue = min_t(u32, rgb[2], (u32)SDE_KCAL_RGB_MAX);
+	sde_kcal_invalidate();
+	mutex_unlock(&sde_kcal_lock);
+
+	return count;
+}
+
+static ssize_t kcal_min_show_impl(char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%u\n", sde_kcal.min);
+}
+
+static ssize_t kcal_min_store_impl(const char *buf, size_t count)
+{
+	u32 val;
+
+	if (kstrtou32(buf, 0, &val))
+		return -EINVAL;
+
+	mutex_lock(&sde_kcal_lock);
+	sde_kcal.min = clamp_t(u32, val, SDE_KCAL_MIN_FLOOR, SDE_KCAL_RGB_MAX);
+	sde_kcal_invalidate();
+	mutex_unlock(&sde_kcal_lock);
+
+	return count;
+}
+
+static ssize_t kcal_enable_show_impl(char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%d\n", sde_kcal.enable ? 1 : 0);
+}
+
+static ssize_t kcal_enable_store_impl(const char *buf, size_t count)
+{
+	bool val;
+
+	if (kstrtobool(buf, &val))
+		return -EINVAL;
+
+	mutex_lock(&sde_kcal_lock);
+	if (sde_kcal.enable != val) {
+		sde_kcal.enable = val;
+		sde_kcal_invalidate();
+	}
+	mutex_unlock(&sde_kcal_lock);
+
+	return count;
+}
+
+static ssize_t kcal_invert_show_impl(char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%d\n", sde_kcal.invert ? 1 : 0);
+}
+
+static ssize_t kcal_invert_store_impl(const char *buf, size_t count)
+{
+	bool val;
+
+	if (kstrtobool(buf, &val))
+		return -EINVAL;
+
+	mutex_lock(&sde_kcal_lock);
+	if (sde_kcal.invert != val) {
+		sde_kcal.invert = val;
+		sde_kcal_invalidate();
+	}
+	mutex_unlock(&sde_kcal_lock);
+
+	return count;
+}
+
+#define SDE_KCAL_PA_ATTR(_name, _id)					       \
+static ssize_t _name##_show_impl(char *buf)				       \
+{									       \
+	return sde_kcal_pa_show_one(buf, _id);				       \
+}									       \
+static ssize_t _name##_store_impl(const char *buf, size_t count)	       \
+{									       \
+	return sde_kcal_pa_store_one(buf, count, _id);			       \
+}
+
+#define SDE_KCAL_ATTR(_name)						       \
+static ssize_t _name##_show(struct device *dev,				       \
+		struct device_attribute *attr, char *buf)		       \
+{									       \
+	return _name##_show_impl(buf);					       \
+}									       \
+static ssize_t _name##_store(struct device *dev,			       \
+		struct device_attribute *attr, const char *buf, size_t count)  \
+{									       \
+	return _name##_store_impl(buf, count);				       \
+}									       \
+static DEVICE_ATTR_RW(_name)
+
+SDE_KCAL_PA_ATTR(kcal_hue, SDE_KCAL_PA_HUE)
+SDE_KCAL_PA_ATTR(kcal_sat, SDE_KCAL_PA_SAT)
+SDE_KCAL_PA_ATTR(kcal_val, SDE_KCAL_PA_VAL)
+SDE_KCAL_PA_ATTR(kcal_cont, SDE_KCAL_PA_CONT)
+
+SDE_KCAL_ATTR(kcal);
+SDE_KCAL_ATTR(kcal_min);
+SDE_KCAL_ATTR(kcal_enable);
+SDE_KCAL_ATTR(kcal_invert);
+SDE_KCAL_ATTR(kcal_hue);
+SDE_KCAL_ATTR(kcal_sat);
+SDE_KCAL_ATTR(kcal_val);
+SDE_KCAL_ATTR(kcal_cont);
+
+static struct attribute *sde_kcal_attrs[] = {
+	&dev_attr_kcal.attr,
+	&dev_attr_kcal_min.attr,
+	&dev_attr_kcal_enable.attr,
+	&dev_attr_kcal_invert.attr,
+	&dev_attr_kcal_hue.attr,
+	&dev_attr_kcal_sat.attr,
+	&dev_attr_kcal_val.attr,
+	&dev_attr_kcal_cont.attr,
+	NULL,
+};
+
+ATTRIBUTE_GROUPS(sde_kcal);
+
+static void sde_kcal_sysfs_init(void)
+{
+	static bool attempted;
+	struct platform_device *pdev;
+
+	mutex_lock(&sde_kcal_lock);
+	if (attempted) {
+		mutex_unlock(&sde_kcal_lock);
+		return;
+	}
+	attempted = true;
+	mutex_unlock(&sde_kcal_lock);
+
+	pdev = platform_device_register_simple("kcal_ctrl", 0, NULL, 0);
+	if (IS_ERR(pdev)) {
+		DRM_ERROR("kcal: failed to register kcal_ctrl: %ld\n",
+				PTR_ERR(pdev));
+		return;
+	}
+
+	if (sysfs_create_groups(&pdev->dev.kobj, sde_kcal_groups)) {
+		DRM_ERROR("kcal: failed to create kcal_ctrl sysfs group\n");
+		platform_device_unregister(pdev);
+		return;
+	}
+
+	sde_kcal.pdev = pdev;
+}
 
 #define ALIGNED_OFFSET (U32_MAX & ~(LTM_GUARD_BYTES))
 
@@ -1461,6 +1996,7 @@ void sde_cp_crtc_init(struct drm_crtc *crtc)
 	INIT_LIST_HEAD(&sde_crtc->cp_feature_list);
 	INIT_LIST_HEAD(&sde_crtc->ad_dirty);
 	INIT_LIST_HEAD(&sde_crtc->ad_active);
+	sde_kcal_sysfs_init();
 	mutex_init(&sde_crtc->ltm_buffer_lock);
 	spin_lock_init(&sde_crtc->ltm_lock);
 	INIT_LIST_HEAD(&sde_crtc->ltm_buf_free);
@@ -2416,7 +2952,8 @@ void sde_cp_crtc_apply_properties(struct drm_crtc *crtc)
 	if (list_empty(&sde_crtc->cp_dirty_list) &&
 			list_empty(&sde_crtc->ad_dirty) &&
 			list_empty(&sde_crtc->ad_active) &&
-			list_empty(&sde_crtc->cp_active_list)) {
+			list_empty(&sde_crtc->cp_active_list) &&
+			!sde_cp_kcal_pending(sde_crtc)) {
 		DRM_DEBUG_DRIVER("all lists are empty\n");
 		goto exit;
 	}
@@ -2430,6 +2967,12 @@ void sde_cp_crtc_apply_properties(struct drm_crtc *crtc)
 			set_dspp_flush = true;
 		else
 			set_lm_flush = true;
+	}
+
+	if (sde_cp_kcal_apply(sde_crtc)) {
+		_sde_cp_dspp_flush_helper(sde_crtc, SDE_CP_CRTC_DSPP_PCC);
+		_sde_cp_dspp_flush_helper(sde_crtc, SDE_CP_CRTC_DSPP_HSIC);
+		set_dspp_flush = true;
 	}
 
 	rc = _sde_cp_crtc_update_pu_features(crtc, &need_flush);
@@ -2987,6 +3530,7 @@ void sde_cp_crtc_suspend(struct drm_crtc *crtc)
 	}
 
 	sde_cp_crtc_mark_features_dirty(crtc);
+	sde_cp_kcal_invalidate_crtc(sde_crtc);
 
 	spin_lock_irqsave(&sde_crtc->ltm_lock, irq_flags);
 	sde_crtc->ltm_hist_en = false;
