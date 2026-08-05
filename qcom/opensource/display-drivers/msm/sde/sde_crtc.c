@@ -5625,8 +5625,6 @@ static void sde_crtc_enable(struct drm_crtc *crtc,
 
 	sde_crtc->enabled = true;
 	sde_cp_crtc_enable(crtc);
-	/* update color processing on resume */
-	sde_cp_crtc_resume(crtc);
 
 	mutex_unlock(&sde_crtc->crtc_lock);
 

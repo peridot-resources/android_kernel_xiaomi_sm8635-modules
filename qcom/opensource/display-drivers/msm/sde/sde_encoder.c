@@ -39,6 +39,7 @@
 #include "sde_hw_dsc.h"
 #include "sde_hw_vdc.h"
 #include "sde_crtc.h"
+#include "sde_color_processing.h"
 #include "sde_trace.h"
 #include "sde_core_irq.h"
 #include "sde_hw_top.h"
@@ -3757,6 +3758,7 @@ static void sde_encoder_virt_enable(struct drm_encoder *drm_enc)
 				ret);
 		return;
 	}
+	sde_cp_crtc_resume(drm_enc->crtc);
 
 	if (sde_encoder_is_built_in_display(drm_enc) &&
 			msm_is_mode_seamless_poms(&c_state->msm_mode))
