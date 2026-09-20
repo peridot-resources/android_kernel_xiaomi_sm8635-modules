@@ -499,7 +499,7 @@ static int fts_ts_probe(struct spi_device *spi)
 
 	ts_data->spi = spi;
 	ts_data->dev = &spi->dev;
-	ts_data->log_level = 1;
+	ts_data->log_level = 0;
 	ts_data->bus_type = BUS_TYPE_SPI;
 	ts_data->bus_ver = BUS_VER_V2;
 	ts_data->dummy_byte = SPI_DUMMY_BYTE;
