@@ -343,24 +343,24 @@ static void __cam_print_log(int type, const char *fmt, ...)
 void cam_print_log(int type, int module, int tag, const char *func,
 	int line, const char *fmt, ...)
 {
-	char buf[CAM_LOG_BUF_LEN] = {0,};
-
-	struct timespec64 ts;
-	uint64_t          ms=0, sec=0, min=0, hrs=0;
-
-	va_list args;
-
-	if (!type)
+	if (!type || (type == CAM_PRINT_TRACE && !READ_ONCE(debug_type)))
 		return;
 
-	CAM_GET_TIMESTAMP(ts);
-	CAM_CONVERT_TIMESTAMP_FORMAT(ts, hrs, min, sec, ms);
+	{
+		char buf[CAM_LOG_BUF_LEN] = { 0 };
+		struct timespec64 ts;
+		uint64_t ms = 0, sec = 0, min = 0, hrs = 0;
+		va_list args;
 
-	va_start(args, fmt);
-	vscnprintf(buf, CAM_LOG_BUF_LEN, fmt, args);
-	__cam_print_log(type, __CAM_LOG_FMT,
-		hrs, min, sec, ms,
-		CAM_LOG_TAG_NAME(tag), CAM_DBG_MOD_NAME(module), func,
-		line, buf);
-	va_end(args);
+		CAM_GET_TIMESTAMP(ts);
+		CAM_CONVERT_TIMESTAMP_FORMAT(ts, hrs, min, sec, ms);
+
+		va_start(args, fmt);
+		vscnprintf(buf, CAM_LOG_BUF_LEN, fmt, args);
+		__cam_print_log(type, __CAM_LOG_FMT,
+			hrs, min, sec, ms,
+			CAM_LOG_TAG_NAME(tag), CAM_DBG_MOD_NAME(module), func,
+			line, buf);
+		va_end(args);
+	}
 }
