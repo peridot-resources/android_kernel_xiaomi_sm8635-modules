@@ -141,7 +141,7 @@ int notify_oneshot_sensor(enum oneshot_sensor_type sensor_type, int value)
 		pr_info("gesture of type %d with value %d ignored due to pocket/nonui mode\n",
 			sensor_type, value);
 	} else if (!atomic_read(&suspended)) {
-		pr_info("gesture of type %d with value %d ignored because touch"
+		pr_debug("gesture of type %d with value %d ignored because touch"
 			"screen is in resume state\n",
 			sensor_type, value);
 	} else {
