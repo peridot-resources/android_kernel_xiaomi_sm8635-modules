@@ -409,7 +409,8 @@ static ssize_t sde_kcal_pa_store_one(const char *buf, size_t count,
 	return count;
 }
 
-static ssize_t kcal_show_impl(char *buf)
+static ssize_t kcal_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
 {
 	u32 r, g, b;
 
@@ -422,7 +423,8 @@ static ssize_t kcal_show_impl(char *buf)
 	return scnprintf(buf, PAGE_SIZE, "%u %u %u\n", r, g, b);
 }
 
-static ssize_t kcal_store_impl(const char *buf, size_t count)
+static ssize_t kcal_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
 {
 	u32 rgb[3];
 
@@ -438,13 +440,16 @@ static ssize_t kcal_store_impl(const char *buf, size_t count)
 
 	return count;
 }
+static DEVICE_ATTR_RW(kcal);
 
-static ssize_t kcal_min_show_impl(char *buf)
+static ssize_t kcal_min_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
 {
 	return scnprintf(buf, PAGE_SIZE, "%u\n", sde_kcal.min);
 }
 
-static ssize_t kcal_min_store_impl(const char *buf, size_t count)
+static ssize_t kcal_min_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
 {
 	u32 val;
 
@@ -458,13 +463,16 @@ static ssize_t kcal_min_store_impl(const char *buf, size_t count)
 
 	return count;
 }
+static DEVICE_ATTR_RW(kcal_min);
 
-static ssize_t kcal_enable_show_impl(char *buf)
+static ssize_t kcal_enable_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
 {
 	return scnprintf(buf, PAGE_SIZE, "%d\n", sde_kcal.enable ? 1 : 0);
 }
 
-static ssize_t kcal_enable_store_impl(const char *buf, size_t count)
+static ssize_t kcal_enable_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
 {
 	bool val;
 
@@ -480,13 +488,16 @@ static ssize_t kcal_enable_store_impl(const char *buf, size_t count)
 
 	return count;
 }
+static DEVICE_ATTR_RW(kcal_enable);
 
-static ssize_t kcal_invert_show_impl(char *buf)
+static ssize_t kcal_invert_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
 {
 	return scnprintf(buf, PAGE_SIZE, "%d\n", sde_kcal.invert ? 1 : 0);
 }
 
-static ssize_t kcal_invert_store_impl(const char *buf, size_t count)
+static ssize_t kcal_invert_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
 {
 	bool val;
 
@@ -502,43 +513,25 @@ static ssize_t kcal_invert_store_impl(const char *buf, size_t count)
 
 	return count;
 }
+static DEVICE_ATTR_RW(kcal_invert);
 
 #define SDE_KCAL_PA_ATTR(_name, _id)					       \
-static ssize_t _name##_show_impl(char *buf)				       \
-{									       \
-	return sde_kcal_pa_show_one(buf, _id);				       \
-}									       \
-static ssize_t _name##_store_impl(const char *buf, size_t count)	       \
-{									       \
-	return sde_kcal_pa_store_one(buf, count, _id);			       \
-}
-
-#define SDE_KCAL_ATTR(_name)						       \
 static ssize_t _name##_show(struct device *dev,				       \
 		struct device_attribute *attr, char *buf)		       \
 {									       \
-	return _name##_show_impl(buf);					       \
+	return sde_kcal_pa_show_one(buf, _id);				       \
 }									       \
 static ssize_t _name##_store(struct device *dev,			       \
 		struct device_attribute *attr, const char *buf, size_t count)  \
 {									       \
-	return _name##_store_impl(buf, count);				       \
+	return sde_kcal_pa_store_one(buf, count, _id);			       \
 }									       \
 static DEVICE_ATTR_RW(_name)
 
-SDE_KCAL_PA_ATTR(kcal_hue, SDE_KCAL_PA_HUE)
-SDE_KCAL_PA_ATTR(kcal_sat, SDE_KCAL_PA_SAT)
-SDE_KCAL_PA_ATTR(kcal_val, SDE_KCAL_PA_VAL)
-SDE_KCAL_PA_ATTR(kcal_cont, SDE_KCAL_PA_CONT)
-
-SDE_KCAL_ATTR(kcal);
-SDE_KCAL_ATTR(kcal_min);
-SDE_KCAL_ATTR(kcal_enable);
-SDE_KCAL_ATTR(kcal_invert);
-SDE_KCAL_ATTR(kcal_hue);
-SDE_KCAL_ATTR(kcal_sat);
-SDE_KCAL_ATTR(kcal_val);
-SDE_KCAL_ATTR(kcal_cont);
+SDE_KCAL_PA_ATTR(kcal_hue, SDE_KCAL_PA_HUE);
+SDE_KCAL_PA_ATTR(kcal_sat, SDE_KCAL_PA_SAT);
+SDE_KCAL_PA_ATTR(kcal_val, SDE_KCAL_PA_VAL);
+SDE_KCAL_PA_ATTR(kcal_cont, SDE_KCAL_PA_CONT);
 
 static struct attribute *sde_kcal_attrs[] = {
 	&dev_attr_kcal.attr,
