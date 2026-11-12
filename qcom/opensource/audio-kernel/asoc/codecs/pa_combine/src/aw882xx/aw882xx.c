@@ -632,7 +632,7 @@ static int aw882xx_monitor_get(struct snd_kcontrol *kcontrol,
   ucontrol->value.integer.value[0] =
       aw_dev->monitor_desc.monitor_cfg.monitor_switch;
 
-  aw_dev_info(aw882xx->dev, "monitor switch is %ld",
+  aw_dev_dbg(aw882xx->dev, "monitor switch is %ld",
               ucontrol->value.integer.value[0]);
   return 0;
 }

@@ -102,7 +102,7 @@ static int aw_monitor_get_voltage(struct aw_device *aw_dev, unsigned int *vol) {
     *vol = local_vol;
   }
 
-  aw_dev_info(aw_dev->dev, "chip voltage is %d", *vol);
+  aw_dev_dbg(aw_dev->dev, "chip voltage is %d", *vol);
 
   return 0;
 }
@@ -126,7 +126,7 @@ static int aw_monitor_get_temperature(struct aw_device *aw_dev, int *temp) {
       aw_dev_err(aw_dev->dev, "get temperature failed!");
       return ret;
     }
-    aw_dev_info(aw_dev->dev, "reg val is 0x%04x", reg_val);
+    aw_dev_dbg(aw_dev->dev, "reg val is 0x%04x", reg_val);
     local_temp = reg_val;
     if (local_temp & (~desc->sign_mask))
       local_temp = local_temp | desc->neg_mask;
@@ -134,7 +134,7 @@ static int aw_monitor_get_temperature(struct aw_device *aw_dev, int *temp) {
     *temp = (int16_t)local_temp;
   }
 
-  aw_dev_info(aw_dev->dev, "chip temperature = %d", *temp);
+  aw_dev_dbg(aw_dev->dev, "chip temperature = %d", *temp);
   return 0;
 }
 
